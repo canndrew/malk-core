@@ -1,8 +1,19 @@
 use std::rc::Rc;
 use std::ops;
+use std::collections::HashMap;
 use std::cmp::Ordering::*;
 
 use TermKind::*;
+
+pub struct Intrinsic {
+    arg_type: Term,
+    ret_type: Term,
+    func: fn(&Term) -> Term,
+}
+
+pub struct World {
+    intrinsics: HashMap<String, Intrinsic>,
+}
 
 /// A pointer to a term.
 #[derive(Debug, Clone, PartialEq)]
@@ -174,11 +185,33 @@ pub enum TermKind {
         res_type: Term,
     }
     */
+
+    /// The type for interacting with the outside world through intrinsics.
+    WorldType,
+
+    /// The term used to represent a fully-normalised world ready to perform IO on.
+    WorldTerm,
+
+    /// Performs an intrinsic call.
+    WorldElim {
+        /// The name of the intrinsic
+        intrinsic: &'static str,
+
+        /// The world argument.
+        world_in: Term,
+
+        /// The argument type that the intrinsic expects.
+        arg: Term,
+
+        /// The result of the expression. Evaluated with the intrinsic result at Var(1) and another
+        /// World at Var(0).
+        expr: Term,
+    },
 }
 
 /// Normalise a term assuming all it's subterms are already normalised. Does beta/eta reduction on
 /// the head of the term.
-pub fn reduce_head(term: &Term) -> Term {
+pub fn reduce_head(term: &Term, world: &World) -> Term {
     match **term {
         Omega |
         Level |
@@ -198,6 +231,8 @@ pub fn reduce_head(term: &Term) -> Term {
         EitherType { .. } |
         EitherLeft { .. } |
         EitherRight { .. } |
+        WorldType |
+        WorldTerm |
         Type { .. } => term.clone(),
 
         LevelMax { ref a, ref b } => {
@@ -209,7 +244,7 @@ pub fn reduce_head(term: &Term) -> Term {
                         a: a_pred.clone(),
                         b: b_pred.clone(),
                     });
-                    let max = reduce_head(&max);
+                    let max = reduce_head(&max, world);
                     Term::new(LevelSucc { pred: max })
                 },
                 _ => term.clone(),
@@ -232,7 +267,7 @@ pub fn reduce_head(term: &Term) -> Term {
             match **func {
                 FuncTerm { ref body } => {
                     let res = substitute(body, arg, 0);
-                    normalise(&res)
+                    normalise(&res, world)
                 },
                 _ => term.clone(),
             }
@@ -261,7 +296,7 @@ pub fn reduce_head(term: &Term) -> Term {
                 PairTerm { ref head, ref tail } => {
                     let res = substitute(res, tail, 0);
                     let res = substitute(&res, head, 0);
-                    normalise(&res)
+                    normalise(&res, world)
                 },
                 _ => term.clone(),
             }
@@ -271,11 +306,11 @@ pub fn reduce_head(term: &Term) -> Term {
             match **arg {
                 EitherLeft { ref val } => {
                     let res = substitute(on_left, val, 0);
-                    normalise(&res)
+                    normalise(&res, world)
                 },
                 EitherRight { ref val } => {
                     let res = substitute(on_right, val, 0);
-                    normalise(&res)
+                    normalise(&res, world)
                 },
                 _ => term.clone(),
             }
@@ -285,7 +320,7 @@ pub fn reduce_head(term: &Term) -> Term {
             match **path {
                 IdentTerm => {
                     let res = substitute(proof, a, 0);
-                    normalise(&res)
+                    normalise(&res, world)
                 },
                 _ => term.clone(),
             }
@@ -302,6 +337,23 @@ pub fn reduce_head(term: &Term) -> Term {
             }
         },
         */
+
+        WorldElim { intrinsic, ref world_in, ref arg, ref expr } => {
+            match **world_in {
+                WorldTerm => {
+                    match world.intrinsics.get(intrinsic) {
+                        None => term.clone(),
+                        Some(intrinsic) => {
+                            let ret = (intrinsic.func)(arg);
+                            let res = substitute(expr, &Term::new(WorldTerm), 0);
+                            let res = substitute(&res, &ret, 0);
+                            normalise(&res, world)
+                        },
+                    }
+                },
+                _ => term.clone(),
+            }
+        },
     }
 }
 
@@ -316,7 +368,7 @@ pub fn recurse(rec_term: &Term, rec_type: &Term, w_type: &Term, res: &Term, dept
 */
 
 /// Normalise a term.
-pub fn normalise(term: &Term) -> Term {
+pub fn normalise(term: &Term, world: &World) -> Term {
     match **term {
         Omega |
         Var(..) |
@@ -325,108 +377,110 @@ pub fn normalise(term: &Term) -> Term {
         UnitTerm |
         IdentTerm |
         NeverType |
+        WorldType |
+        WorldTerm |
         LevelZero => term.clone(),
 
         LevelSucc { ref pred } => {
             Term::new(LevelSucc {
-                pred: normalise(pred),
+                pred: normalise(pred, world),
             })
         },
 
         LevelMax { ref a, ref b } => {
             let max = Term::new(LevelMax {
-                a: normalise(a),
-                b: normalise(b),
+                a: normalise(a, world),
+                b: normalise(b, world),
             });
-            reduce_head(&max)
+            reduce_head(&max, world)
         },
 
         Type { ref level } => {
             Term::new(Type {
-                level: normalise(level),
+                level: normalise(level, world),
             })
         },
 
         FuncType { ref arg_type, ref res_type } => {
             Term::new(FuncType {
-                arg_type: normalise(arg_type),
-                res_type: normalise(res_type),
+                arg_type: normalise(arg_type, world),
+                res_type: normalise(res_type, world),
             })
         },
 
         FuncTerm { ref body } => {
             let func_term = Term::new(FuncTerm {
-                body: normalise(body),
+                body: normalise(body, world),
             });
-            reduce_head(&func_term)
+            reduce_head(&func_term, world)
         },
 
         FuncApp { ref func, ref arg, ref arg_type, ref res_type } => {
             let func_app = Term::new(FuncApp {
-                func: normalise(func),
-                arg: normalise(arg),
-                arg_type: normalise(arg_type),
-                res_type: normalise(res_type),
+                func: normalise(func, world),
+                arg: normalise(arg, world),
+                arg_type: normalise(arg_type, world),
+                res_type: normalise(res_type, world),
             });
-            reduce_head(&func_app)
+            reduce_head(&func_app, world)
         },
 
         PairType { ref head_type, ref tail_type } => {
             Term::new(PairType {
-                head_type: normalise(head_type),
-                tail_type: normalise(tail_type),
+                head_type: normalise(head_type, world),
+                tail_type: normalise(tail_type, world),
             })
         },
 
         PairTerm { ref head, ref tail } => {
             let pair_term = Term::new(PairTerm {
-                head: normalise(head),
-                tail: normalise(tail),
+                head: normalise(head, world),
+                tail: normalise(tail, world),
             });
-            reduce_head(&pair_term)
+            reduce_head(&pair_term, world)
         },
 
         PairElim { ref pair, ref res, ref head_type, ref tail_type } => {
             let pair_elim = Term::new(PairElim {
-                pair: normalise(pair),
-                res: normalise(res),
-                head_type: normalise(head_type),
-                tail_type: normalise(tail_type),
+                pair: normalise(pair, world),
+                res: normalise(res, world),
+                head_type: normalise(head_type, world),
+                tail_type: normalise(tail_type, world),
             });
-            reduce_head(&pair_elim)
+            reduce_head(&pair_elim, world)
         },
 
         NeverElim { ref never } => {
             Term::new(NeverElim {
-                never: normalise(never),
+                never: normalise(never, world),
             })
         },
 
         EitherType { ref left_type, ref right_type } => {
             Term::new(EitherType {
-                left_type: normalise(left_type),
-                right_type: normalise(right_type),
+                left_type: normalise(left_type, world),
+                right_type: normalise(right_type, world),
             })
         },
 
         EitherLeft { ref val } => {
             Term::new(EitherLeft {
-                val: normalise(val),
+                val: normalise(val, world),
             })
         },
 
         EitherRight { ref val } => {
             Term::new(EitherRight {
-                val: normalise(val),
+                val: normalise(val, world),
             })
         },
 
         EitherElim { ref arg, ref arg_type, ref res_type, ref on_left, ref on_right } => {
-            let arg = normalise(arg);
-            let arg_type = normalise(arg_type);
-            let res_type = normalise(res_type);
-            let on_left = normalise(on_left);
-            let on_right = normalise(on_right);
+            let arg = normalise(arg, world);
+            let arg_type = normalise(arg_type, world);
+            let res_type = normalise(res_type, world);
+            let on_left = normalise(on_left, world);
+            let on_right = normalise(on_right, world);
             let either_elim = Term::new(EitherElim {
                 arg: arg,
                 arg_type: arg_type,
@@ -434,24 +488,24 @@ pub fn normalise(term: &Term) -> Term {
                 on_left: on_left,
                 on_right: on_right,
             });
-            reduce_head(&either_elim)
+            reduce_head(&either_elim, world)
         },
 
         IdentType { ref term_type, ref a, ref b } => {
             Term::new(IdentType {
-                term_type: normalise(term_type),
-                a: normalise(a),
-                b: normalise(b),
+                term_type: normalise(term_type, world),
+                a: normalise(a, world),
+                b: normalise(b, world),
             })
         },
 
         IdentElim { ref term_type, ref a, ref b, ref path, ref context, ref proof } => {
-            let term_type = normalise(term_type);
-            let a = normalise(a);
-            let b = normalise(b);
-            let path = normalise(path);
-            let context = normalise(context);
-            let proof = normalise(proof);
+            let term_type = normalise(term_type, world);
+            let a = normalise(a, world);
+            let b = normalise(b, world);
+            let path = normalise(path, world);
+            let context = normalise(context, world);
+            let proof = normalise(proof, world);
             let ident_elim = Term::new(IdentElim {
                 term_type: term_type,
                 a: a,
@@ -460,19 +514,32 @@ pub fn normalise(term: &Term) -> Term {
                 context: context,
                 proof: proof,
             });
-            reduce_head(&ident_elim)
+            reduce_head(&ident_elim, world)
         },
 
         RecType { ref rec_type } => {
             Term::new(RecType {
-                rec_type: normalise(rec_type),
+                rec_type: normalise(rec_type, world),
             })
         },
 
         RecTerm { ref rec_term } => {
             Term::new(RecTerm {
-                rec_term: normalise(rec_term),
+                rec_term: normalise(rec_term, world),
             })
+        },
+
+        WorldElim { intrinsic, ref world_in, ref arg, ref expr } => {
+            let world_in = normalise(world_in, world);
+            let arg = normalise(arg, world);
+            let expr = normalise(expr, world);
+            let world_elim = Term::new(WorldElim {
+                intrinsic: intrinsic,
+                world_in: world_in,
+                arg: arg,
+                expr: expr,
+            });
+            reduce_head(&world_elim, world)
         },
     }
 }
@@ -486,6 +553,8 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
         UnitType |
         UnitTerm |
         NeverType |
+        WorldType |
+        WorldTerm |
         IdentTerm => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -658,6 +727,19 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
                 rec_term: substitute(rec_term, sub, index),
             })
         },
+
+        WorldElim { intrinsic, ref world_in, ref arg, ref expr } => {
+            let world_in = substitute(world_in, sub, index);
+            let arg = substitute(arg, sub, index);
+            let new_sub = bump_index(sub, 2, 0);
+            let expr = substitute(expr, &new_sub, index + 2);
+            Term::new(WorldElim {
+                intrinsic: intrinsic,
+                world_in: world_in,
+                arg: arg,
+                expr: expr,
+            })
+        },
     }
 }
 
@@ -678,6 +760,8 @@ pub fn bump_index(term: &Term, amount: usize, cutoff: usize) -> Term {
         UnitType |
         UnitTerm |
         NeverType |
+        WorldType |
+        WorldTerm |
         IdentTerm => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -816,6 +900,15 @@ pub fn bump_index(term: &Term, amount: usize, cutoff: usize) -> Term {
                 rec_term: bump_index(rec_term, amount, cutoff),
             })
         },
+
+        WorldElim { intrinsic, ref world_in, ref arg, ref expr } => {
+            Term::new(WorldElim {
+                intrinsic: intrinsic,
+                world_in: bump_index(world_in, amount, cutoff),
+                arg: bump_index(arg, amount, cutoff),
+                expr: bump_index(expr, amount, cutoff + 2),
+            })
+        }
     }
 }
 
