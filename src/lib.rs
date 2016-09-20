@@ -5,7 +5,7 @@ use std::cmp::Ordering::*;
 use TermKind::*;
 
 /// A pointer to a term.
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Term(Rc<TermKind>);
 
 impl ops::Deref for Term {
@@ -25,6 +25,7 @@ impl Term {
 }
 
 /// The different kinds of term that can appear in the AST.
+#[derive(Debug, Clone, PartialEq)]
 pub enum TermKind {
     /// The type of all types, and levels, which does not itself have a type.
     Omega,
@@ -80,6 +81,59 @@ pub enum TermKind {
 
     /// The unit term.
     UnitTerm,
+
+    /// A dependent pair type (ie. sigma type)
+    PairType {
+        head_type: Term,
+        tail_type: Term,
+    },
+
+    /// A pair term.
+    PairTerm {
+        head: Term,
+        tail: Term,
+    },
+
+    /// Dependent pair elimintation.
+    PairElim {
+        pair: Term,
+        res: Term,
+        head_type: Term,
+        tail_type: Term,
+    },
+
+    /// The canonical empty type, (ie. bottom).
+    NeverType,
+
+    /// Never type elimintator
+    NeverElim {
+        never: Term,
+    },
+
+    /// Disjoint union, sum type.
+    EitherType {
+        left_type: Term,
+        right_type: Term,
+    },
+
+    /// Inject left.
+    EitherLeft {
+        val: Term,
+    },
+
+    /// Inject right.
+    EitherRight {
+        val: Term,
+    },
+
+    /// Case match on a sum type.
+    EitherElim {
+        arg: Term,
+        arg_type: Term,
+        res_type: Term,
+        on_left: Term,
+        on_right: Term,
+    },
 
     /// The type of identifications (a == b)
     IdentType {
@@ -138,6 +192,12 @@ pub fn reduce_head(term: &Term) -> Term {
         IdentTerm |
         RecType { .. } |
         RecTerm { .. } |
+        PairType { .. } |
+        NeverType |
+        NeverElim { .. } |
+        EitherType { .. } |
+        EitherLeft { .. } |
+        EitherRight { .. } |
         Type { .. } => term.clone(),
 
         LevelMax { ref a, ref b } => {
@@ -171,7 +231,51 @@ pub fn reduce_head(term: &Term) -> Term {
         FuncApp { ref func, ref arg, .. } => {
             match **func {
                 FuncTerm { ref body } => {
-                    substitute(body, arg, 0)
+                    let res = substitute(body, arg, 0);
+                    normalise(&res)
+                },
+                _ => term.clone(),
+            }
+        },
+
+        PairTerm { ref head, ref tail } => {
+            match (&**head, &**tail) {
+                (&PairElim { pair: ref head_pair, res: ref head_res, .. },
+                 &PairElim { pair: ref tail_pair, res: ref tail_res, .. }) => {
+                    match (&**head_res, &**tail_res) {
+                        (&Var(1), &Var(0)) => {
+                            match **head_pair == **tail_pair {
+                                true => head_pair.clone(),
+                                false => term.clone(),
+                            }
+                        },
+                        _ => term.clone(),
+                    }
+                },
+                _ => term.clone(),
+            }
+        },
+
+        PairElim { ref pair, ref res, .. } => {
+            match **pair {
+                PairTerm { ref head, ref tail } => {
+                    let res = substitute(res, tail, 0);
+                    let res = substitute(&res, head, 0);
+                    normalise(&res)
+                },
+                _ => term.clone(),
+            }
+        },
+
+        EitherElim { ref arg, ref on_left, ref on_right, .. } => {
+            match **arg {
+                EitherLeft { ref val } => {
+                    let res = substitute(on_left, val, 0);
+                    normalise(&res)
+                },
+                EitherRight { ref val } => {
+                    let res = substitute(on_right, val, 0);
+                    normalise(&res)
                 },
                 _ => term.clone(),
             }
@@ -180,7 +284,8 @@ pub fn reduce_head(term: &Term) -> Term {
         IdentElim { ref a, ref path, ref proof, .. } => {
             match **path {
                 IdentTerm => {
-                    substitute(proof, a, 0)
+                    let res = substitute(proof, a, 0);
+                    normalise(&res)
                 },
                 _ => term.clone(),
             }
@@ -219,6 +324,7 @@ pub fn normalise(term: &Term) -> Term {
         UnitType |
         UnitTerm |
         IdentTerm |
+        NeverType |
         LevelZero => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -263,6 +369,72 @@ pub fn normalise(term: &Term) -> Term {
                 res_type: normalise(res_type),
             });
             reduce_head(&func_app)
+        },
+
+        PairType { ref head_type, ref tail_type } => {
+            Term::new(PairType {
+                head_type: normalise(head_type),
+                tail_type: normalise(tail_type),
+            })
+        },
+
+        PairTerm { ref head, ref tail } => {
+            let pair_term = Term::new(PairTerm {
+                head: normalise(head),
+                tail: normalise(tail),
+            });
+            reduce_head(&pair_term)
+        },
+
+        PairElim { ref pair, ref res, ref head_type, ref tail_type } => {
+            let pair_elim = Term::new(PairElim {
+                pair: normalise(pair),
+                res: normalise(res),
+                head_type: normalise(head_type),
+                tail_type: normalise(tail_type),
+            });
+            reduce_head(&pair_elim)
+        },
+
+        NeverElim { ref never } => {
+            Term::new(NeverElim {
+                never: normalise(never),
+            })
+        },
+
+        EitherType { ref left_type, ref right_type } => {
+            Term::new(EitherType {
+                left_type: normalise(left_type),
+                right_type: normalise(right_type),
+            })
+        },
+
+        EitherLeft { ref val } => {
+            Term::new(EitherLeft {
+                val: normalise(val),
+            })
+        },
+
+        EitherRight { ref val } => {
+            Term::new(EitherRight {
+                val: normalise(val),
+            })
+        },
+
+        EitherElim { ref arg, ref arg_type, ref res_type, ref on_left, ref on_right } => {
+            let arg = normalise(arg);
+            let arg_type = normalise(arg_type);
+            let res_type = normalise(res_type);
+            let on_left = normalise(on_left);
+            let on_right = normalise(on_right);
+            let either_elim = Term::new(EitherElim {
+                arg: arg,
+                arg_type: arg_type,
+                res_type: res_type,
+                on_left: on_left,
+                on_right: on_right,
+            });
+            reduce_head(&either_elim)
         },
 
         IdentType { ref term_type, ref a, ref b } => {
@@ -313,6 +485,7 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
         LevelZero |
         UnitType |
         UnitTerm |
+        NeverType |
         IdentTerm => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -370,6 +543,79 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
                 arg: arg,
                 arg_type: arg_type,
                 res_type: res_type,
+            })
+        },
+
+        PairType { ref head_type, ref tail_type } => {
+            let head_type = substitute(head_type, sub, index);
+            let new_sub = bump_index(sub, 1, 0);
+            let tail_type = substitute(tail_type, &new_sub, index + 1);
+            Term::new(PairType {
+                head_type: head_type,
+                tail_type: tail_type,
+            })
+        },
+
+        PairTerm { ref head, ref tail } => {
+            Term::new(PairTerm {
+                head: substitute(head, sub, index),
+                tail: substitute(tail, sub, index),
+            })
+        },
+
+        PairElim { ref pair, ref res, ref head_type, ref tail_type } => {
+            let pair = substitute(pair, sub, index);
+            let head_type = substitute(head_type, sub, index);
+            let new_sub = bump_index(sub, 1, 0);
+            let tail_type = substitute(tail_type, &new_sub, index + 1);
+            let new_sub = bump_index(sub, 2, 0);
+            let res = substitute(res, &new_sub, index + 2);
+            Term::new(PairElim {
+                pair: pair,
+                res: res,
+                head_type: head_type,
+                tail_type: tail_type,
+            })
+        },
+
+        NeverElim { ref never } => {
+            Term::new(NeverElim {
+                never: substitute(never, sub, index),
+            })
+        },
+
+        EitherType { ref left_type, ref right_type } => {
+            Term::new(EitherType {
+                left_type: substitute(left_type, sub, index),
+                right_type: substitute(right_type, sub, index),
+            })
+        },
+
+        EitherLeft { ref val } => {
+            Term::new(EitherLeft {
+                val: substitute(val, sub, index),
+            })
+        },
+
+        EitherRight { ref val } => {
+            Term::new(EitherRight {
+                val: substitute(val, sub, index),
+            })
+        },
+
+        EitherElim { ref arg, ref arg_type, ref res_type, ref on_left, ref on_right } => {
+            let arg = substitute(arg, sub, index);
+            let arg_type = substitute(arg_type, sub, index);
+            let new_sub = bump_index(sub, 1, 0);
+            let res_type = substitute(res_type, &new_sub, index + 1);
+            let on_left = substitute(on_left, &new_sub, index + 1);
+            let on_right = substitute(on_right, &new_sub, index + 1);
+            Term::new(EitherElim {
+                arg: arg,
+                arg_type: arg_type,
+                res_type: res_type,
+                on_left: on_left,
+                on_right: on_right,
             })
         },
 
@@ -431,6 +677,7 @@ pub fn bump_index(term: &Term, amount: usize, cutoff: usize) -> Term {
         LevelZero |
         UnitType |
         UnitTerm |
+        NeverType |
         IdentTerm => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -478,6 +725,64 @@ pub fn bump_index(term: &Term, amount: usize, cutoff: usize) -> Term {
                 arg: bump_index(arg, amount, cutoff),
                 arg_type: bump_index(arg_type, amount, cutoff),
                 res_type: bump_index(res_type, amount, cutoff + 1),
+            })
+        },
+
+        PairType { ref head_type, ref tail_type } => {
+            Term::new(PairType {
+                head_type: bump_index(head_type, amount, cutoff),
+                tail_type: bump_index(tail_type, amount, cutoff + 1),
+            })
+        },
+
+        PairTerm { ref head, ref tail } => {
+            Term::new(PairTerm {
+                head: bump_index(head, amount, cutoff),
+                tail: bump_index(tail, amount, cutoff),
+            })
+        },
+
+        PairElim { ref pair, ref res, ref head_type, ref tail_type } => {
+            Term::new(PairElim {
+                pair: bump_index(pair, amount, cutoff),
+                res: bump_index(res, amount, cutoff + 2),
+                head_type: bump_index(head_type, amount, cutoff),
+                tail_type: bump_index(tail_type, amount, cutoff + 1),
+            })
+        },
+
+        NeverElim { ref never } => {
+            Term::new(NeverElim {
+                never: bump_index(never, amount, cutoff),
+            })
+        },
+
+        EitherType { ref left_type, ref right_type } => {
+            Term::new(EitherType {
+                left_type: bump_index(left_type, amount, cutoff),
+                right_type: bump_index(right_type, amount, cutoff),
+            })
+        },
+
+        EitherLeft { ref val } => {
+            Term::new(EitherLeft {
+                val: bump_index(val, amount, cutoff),
+            })
+        },
+
+        EitherRight { ref val } => {
+            Term::new(EitherRight {
+                val: bump_index(val, amount, cutoff),
+            })
+        },
+
+        EitherElim { ref arg, ref arg_type, ref res_type, ref on_left, ref on_right } => {
+            Term::new(EitherElim {
+                arg: bump_index(arg, amount, cutoff),
+                arg_type: bump_index(arg_type, amount, cutoff),
+                res_type: bump_index(res_type, amount, cutoff + 1),
+                on_left: bump_index(on_left, amount, cutoff + 1),
+                on_right: bump_index(on_right, amount, cutoff + 1),
             })
         },
 
