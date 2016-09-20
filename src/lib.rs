@@ -6,9 +6,9 @@ use std::cmp::Ordering::*;
 use TermKind::*;
 
 pub struct Intrinsic {
-    arg_type: Term,
-    ret_type: Term,
-    func: fn(&Term) -> Term,
+    pub arg_type: Term,
+    pub ret_type: Term,
+    pub func: fn(&Term) -> Term,
 }
 
 pub struct World {
@@ -207,6 +207,22 @@ pub enum TermKind {
         /// World at Var(0).
         expr: Term,
     },
+
+    /// Unsigned, memory-sized integers.
+    UmType,
+
+    /// An intger literal.
+    UmTerm {
+        val: u64,
+    },
+
+    /// Case match on a Um.
+    UmElim {
+        arg: Term,
+        res_type: Term,
+        on_zero: Term,
+        on_succ: Term,
+    },
 }
 
 /// Normalise a term assuming all it's subterms are already normalised. Does beta/eta reduction on
@@ -233,6 +249,8 @@ pub fn reduce_head(term: &Term, world: &World) -> Term {
         EitherRight { .. } |
         WorldType |
         WorldTerm |
+        UmType |
+        UmTerm { .. } |
         Type { .. } => term.clone(),
 
         LevelMax { ref a, ref b } => {
@@ -354,6 +372,19 @@ pub fn reduce_head(term: &Term, world: &World) -> Term {
                 _ => term.clone(),
             }
         },
+
+        UmElim { ref arg, ref on_zero, ref on_succ, .. } => {
+            match **arg {
+                UmTerm { val: 0 } => {
+                    on_zero.clone()
+                },
+                UmTerm { val } => {
+                    let res = substitute(on_succ, &Term::new(UmTerm { val: val - 1 }), 0);
+                    normalise(&res, world)
+                },
+                _ => term.clone(),
+            }
+        },
     }
 }
 
@@ -379,6 +410,8 @@ pub fn normalise(term: &Term, world: &World) -> Term {
         NeverType |
         WorldType |
         WorldTerm |
+        UmType |
+        UmTerm { .. } |
         LevelZero => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -541,6 +574,20 @@ pub fn normalise(term: &Term, world: &World) -> Term {
             });
             reduce_head(&world_elim, world)
         },
+
+        UmElim { ref arg, ref res_type, ref on_zero, ref on_succ } => {
+            let arg = normalise(arg, world);
+            let res_type = normalise(res_type, world);
+            let on_zero = normalise(on_zero, world);
+            let on_succ = normalise(on_succ, world);
+            let um_elim = Term::new(UmElim {
+                arg: arg,
+                res_type: res_type,
+                on_zero: on_zero,
+                on_succ: on_succ,
+            });
+            reduce_head(&um_elim, world)
+        },
     }
 }
 
@@ -555,6 +602,8 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
         NeverType |
         WorldType |
         WorldTerm |
+        UmType |
+        UmTerm { .. } |
         IdentTerm => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -740,6 +789,20 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
                 expr: expr,
             })
         },
+
+        UmElim { ref arg, ref res_type, ref on_zero, ref on_succ } => {
+            let arg = substitute(arg, sub, index);
+            let new_sub = bump_index(sub, 1, 0);
+            let res_type = substitute(res_type, &new_sub, index + 1);
+            let on_zero = substitute(on_zero, sub, index);
+            let on_succ = substitute(on_succ, &new_sub, index + 1);
+            Term::new(UmElim {
+                arg: arg,
+                res_type: res_type,
+                on_zero: on_zero,
+                on_succ: on_succ,
+            })
+        },
     }
 }
 
@@ -762,6 +825,8 @@ pub fn bump_index(term: &Term, amount: usize, cutoff: usize) -> Term {
         NeverType |
         WorldType |
         WorldTerm |
+        UmType |
+        UmTerm { .. } |
         IdentTerm => term.clone(),
 
         LevelSucc { ref pred } => {
@@ -907,6 +972,15 @@ pub fn bump_index(term: &Term, amount: usize, cutoff: usize) -> Term {
                 world_in: bump_index(world_in, amount, cutoff),
                 arg: bump_index(arg, amount, cutoff),
                 expr: bump_index(expr, amount, cutoff + 2),
+            })
+        }
+
+        UmElim { ref arg, ref res_type, ref on_zero, ref on_succ } => {
+            Term::new(UmElim {
+                arg: bump_index(arg, amount, cutoff),
+                res_type: bump_index(res_type, amount, cutoff + 1),
+                on_zero: bump_index(on_zero, amount, cutoff),
+                on_succ: bump_index(on_succ, amount, cutoff + 1),
             })
         }
     }
