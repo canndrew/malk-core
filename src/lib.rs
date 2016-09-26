@@ -105,7 +105,7 @@ pub enum TermKind {
         tail: Term,
     },
 
-    /// Dependent pair elimintation.
+    /// Dependent pair elimination.
     PairElim {
         pair: Term,
         res: Term,
@@ -214,6 +214,11 @@ pub enum TermKind {
     /// An intger literal.
     UmTerm {
         val: u64,
+    },
+
+    /// An integer literal equal to `1 + pred`
+    UmSucc {
+        pred: Term,
     },
 
     /// Case match on a Um.
@@ -373,6 +378,15 @@ pub fn reduce_head(term: &Term, world: &World) -> Term {
             }
         },
 
+        UmSucc { ref pred } => {
+            match **pred {
+                UmTerm { val } => {
+                    Term::new(UmTerm { val: val + 1 })
+                },
+                _ => term.clone(),
+            }
+        },
+
         UmElim { ref arg, ref on_zero, ref on_succ, .. } => {
             match **arg {
                 UmTerm { val: 0 } => {
@@ -380,6 +394,10 @@ pub fn reduce_head(term: &Term, world: &World) -> Term {
                 },
                 UmTerm { val } => {
                     let res = substitute(on_succ, &Term::new(UmTerm { val: val - 1 }), 0);
+                    normalise(&res, world)
+                },
+                UmSucc { ref pred } => {
+                    let res = substitute(on_succ, &pred, 0);
                     normalise(&res, world)
                 },
                 _ => term.clone(),
@@ -573,6 +591,14 @@ pub fn normalise(term: &Term, world: &World) -> Term {
                 expr: expr,
             });
             reduce_head(&world_elim, world)
+        },
+
+        UmSucc { ref pred } => {
+            let pred = normalise(pred, world);
+            let um_succ = Term::new(UmSucc {
+                pred: pred,
+            });
+            reduce_head(&um_succ, world)
         },
 
         UmElim { ref arg, ref res_type, ref on_zero, ref on_succ } => {
@@ -790,6 +816,12 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
             })
         },
 
+        UmSucc { ref pred } => {
+            Term::new(UmSucc {
+                pred: substitute(pred, sub, index)
+            })
+        },
+
         UmElim { ref arg, ref res_type, ref on_zero, ref on_succ } => {
             let arg = substitute(arg, sub, index);
             let new_sub = bump_index(sub, 1, 0);
@@ -973,7 +1005,13 @@ pub fn bump_index(term: &Term, amount: usize, cutoff: usize) -> Term {
                 arg: bump_index(arg, amount, cutoff),
                 expr: bump_index(expr, amount, cutoff + 2),
             })
-        }
+        },
+
+        UmSucc { ref pred } => {
+            Term::new(UmSucc {
+                pred: bump_index(pred, amount, cutoff),
+            })
+        },
 
         UmElim { ref arg, ref res_type, ref on_zero, ref on_succ } => {
             Term::new(UmElim {
