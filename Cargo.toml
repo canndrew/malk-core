@@ -1,12 +1,10 @@
 [package]
 name = "malk-core"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Andrew Cann <shum@canndrew.org>"]
 repository = "https://github.com/canndrew/malk-core"
 homepage = "https://github.com/canndrew/malk-core"
 readme = "README.md"
-description = "A simple unicode lexer"
+description = "Partial implementation of dependent types"
 license = "GPL-3.0"
-
-[dependencies]
 
