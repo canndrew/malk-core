@@ -177,7 +177,7 @@ pub enum TermKind {
     },
 
     /*
-    /// Recursive elimintation. Fold over the term `arg` or recursive type `arg_type`.
+    /// Recursive elimintation. Fold over the term `arg` of recursive type `arg_type`.
     RecElim {
         arg: Term,
         res: Term,
@@ -843,7 +843,7 @@ pub fn substitute(term: &Term, sub: &Term, index: usize) -> Term {
 /// appropriately).
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// bump_index(`(Var(0), Var(1), Var(2))`, 1, 100) => `(Var(0), Var(101), Var(102))`
 /// bump_index(`(Var(0), FuncTerm(Var(0))))`, 0, 100) => `(Var(100), FuncTerm(Var(0)))`
 /// ```
